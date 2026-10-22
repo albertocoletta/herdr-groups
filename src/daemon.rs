@@ -27,12 +27,30 @@ pub fn lock(state_dir: &Path) -> io::Result<Option<File>> {
     }
 }
 
-pub fn request_stop(state_dir: &Path, timeout: Duration) -> io::Result<bool> {
-    write_stop_request(state_dir)?;
+pub fn lock_for_start(state_dir: &Path, timeout: Duration) -> io::Result<Option<File>> {
     let deadline = Instant::now() + timeout;
     loop {
-        if lock(state_dir)?.is_some() {
-            let _ = fs::remove_file(state_dir.join(STOP_FILE));
+        if let Some(file) = lock(state_dir)? {
+            return Ok(Some(file));
+        }
+        if !state_dir.join(STOP_FILE).exists() || Instant::now() >= deadline {
+            return Ok(None);
+        }
+        thread::sleep(STOP_POLL);
+    }
+}
+
+pub fn request_stop(state_dir: &Path, timeout: Duration) -> io::Result<bool> {
+    write_stop_request(state_dir)?;
+    let stop_file = state_dir.join(STOP_FILE);
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !stop_file.exists() {
+            return Ok(true);
+        }
+        if let Some(released) = lock(state_dir)? {
+            drop(released);
+            let _ = fs::remove_file(&stop_file);
             return Ok(true);
         }
         if Instant::now() >= deadline {
@@ -83,7 +101,6 @@ impl<H: Herdr> Daemon<H> {
         let mut socket_failures = 0;
         loop {
             if self.stop_file.exists() {
-                let _ = fs::remove_file(&self.stop_file);
                 self.sync.clear_all(&self.herdr);
                 let _ = self.herdr.call("agent.view.clear", json!({ "source": self.source }));
                 return Exit::Stopped;
@@ -254,7 +271,50 @@ mod tests {
         let herdr = FakeHerdr::default();
         Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(stop_after(dir.path(), 1));
         assert_eq!(herdr.calls.borrow().last().unwrap(), "agent.view.clear");
-        assert!(!dir.path().join(STOP_FILE).exists());
+    }
+
+    #[test]
+    fn stop_request_outlives_the_stopped_instance() {
+        let dir = TempDir::new().unwrap();
+        Daemon::new(FakeHerdr::default(), "plugin:test".into(), dir.path()).run(stop_after(dir.path(), 1));
+        assert!(dir.path().join(STOP_FILE).exists());
+    }
+
+    #[test]
+    fn start_waits_for_a_stopping_instance() {
+        let dir = TempDir::new().unwrap();
+        let held = lock(dir.path()).unwrap().unwrap();
+        write_stop_request(dir.path()).unwrap();
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            drop(held);
+        });
+        let started = Instant::now();
+        assert!(lock_for_start(dir.path(), Duration::from_secs(3)).unwrap().is_some());
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        releaser.join().unwrap();
+    }
+
+    #[test]
+    fn start_gives_up_at_once_without_a_pending_stop() {
+        let dir = TempDir::new().unwrap();
+        let _held = lock(dir.path()).unwrap().unwrap();
+        let started = Instant::now();
+        assert!(lock_for_start(dir.path(), Duration::from_secs(3)).unwrap().is_none());
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn stop_succeeds_when_a_replacement_already_started() {
+        let dir = TempDir::new().unwrap();
+        let _replacement = lock(dir.path()).unwrap().unwrap();
+        let state_dir = dir.path().to_path_buf();
+        let consumer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            fs::remove_file(state_dir.join(STOP_FILE)).unwrap();
+        });
+        assert!(request_stop(dir.path(), Duration::from_secs(3)).unwrap());
+        consumer.join().unwrap();
     }
 
     #[test]

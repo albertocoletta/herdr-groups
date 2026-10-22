@@ -47,7 +47,7 @@ fn start(state_dir: PathBuf) -> ExitCode {
         eprintln!("groups: HERDR_SOCKET_PATH is not set");
         return ExitCode::FAILURE;
     };
-    let _lock = match daemon::lock(&state_dir) {
+    let _lock = match daemon::lock_for_start(&state_dir, STOP_TIMEOUT) {
         Ok(Some(lock)) => lock,
         Ok(None) => return ExitCode::SUCCESS,
         Err(error) => {
