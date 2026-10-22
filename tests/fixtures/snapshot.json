@@ -1,0 +1,53 @@
+{
+  "agents": [
+    {
+      "agent": "claude",
+      "agent_status": "working",
+      "cwd": "/home/dev/projects/api",
+      "foreground_cwd": "/home/dev/projects/api/src",
+      "pane_id": "wA:p2",
+      "tab_id": "wA:t1",
+      "terminal_title": "◐ Refactor auth",
+      "terminal_title_stripped": "Refactor auth",
+      "workspace_id": "wA"
+    },
+    {
+      "agent": "codex",
+      "agent_status": "idle",
+      "cwd": "/home/dev/projects/web",
+      "pane_id": "wB:p1",
+      "tab_id": "wB:t1",
+      "workspace_id": "wB"
+    },
+    {
+      "agent": "claude",
+      "agent_status": "blocked",
+      "cwd": "/home/dev/projects/api",
+      "foreground_cwd": "/home/dev/projects/api",
+      "pane_id": "wA:p1",
+      "tab_id": "wA:t1",
+      "terminal_title": "✳ Claude Code",
+      "terminal_title_stripped": "Claude Code",
+      "workspace_id": "wA"
+    }
+  ],
+  "focused_pane_id": "wA:p2",
+  "focused_tab_id": "wA:t1",
+  "focused_workspace_id": "wA",
+  "layouts": [],
+  "panes": [
+    { "pane_id": "wB:p1", "tab_id": "wB:t1", "workspace_id": "wB" },
+    { "pane_id": "wA:p1", "tab_id": "wA:t1", "workspace_id": "wA" },
+    { "pane_id": "wA:p2", "tab_id": "wA:t1", "workspace_id": "wA" }
+  ],
+  "protocol": 1,
+  "tabs": [
+    { "tab_id": "wB:t1", "workspace_id": "wB" },
+    { "tab_id": "wA:t1", "workspace_id": "wA" }
+  ],
+  "version": "0.9.5",
+  "workspaces": [
+    { "label": "web", "workspace_id": "wB" },
+    { "label": "api", "workspace_id": "wA" }
+  ]
+}

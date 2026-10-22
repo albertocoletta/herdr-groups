@@ -1,0 +1,23 @@
+id = "albertocoletta.groups"
+name = "groups"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+platforms = ["macos", "linux"]
+description = "Group the Agents panel by git checkout, with a header per project."
+
+[[startup]]
+command = ["bin/herdr-groups", "start"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["bin/herdr-groups", "start"]
+
+[[actions]]
+id = "start"
+title = "groups: start"
+command = ["bin/herdr-groups", "start"]
+
+[[actions]]
+id = "stop"
+title = "groups: stop"
+command = ["bin/herdr-groups", "stop"]
