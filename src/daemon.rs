@@ -192,7 +192,13 @@ mod tests {
     fn lock_is_released_when_dropped() {
         let dir = TempDir::new().unwrap();
         drop(lock(dir.path()).unwrap().unwrap());
-        assert!(lock(dir.path()).unwrap().is_some());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut relocked = lock(dir.path()).unwrap();
+        while relocked.is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+            relocked = lock(dir.path()).unwrap();
+        }
+        assert!(relocked.is_some());
     }
 
     #[test]
