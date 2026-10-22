@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 use crate::herdr::{Error, Herdr};
 use crate::layout::Row;
 
-pub const TOKENS: [&str; 3] = ["order", "header", "label"];
+pub const TOKENS: [&str; 2] = ["order", "header"];
 
 pub struct Sync {
     source: String,
@@ -63,14 +63,13 @@ impl Sync {
 
 fn changes(previous: Option<&Row>, row: &Row) -> Map<String, Value> {
     let mut patch = Map::new();
-    let mut set = |token: &str, old: Option<&str>, new: Option<&str>| {
-        if old != new {
-            patch.insert(token.to_string(), new.map_or(Value::Null, |value| Value::String(value.into())));
+    let mut set = |token: &str, old: Option<&str>, new: &str| {
+        if old != Some(new) {
+            patch.insert(token.to_string(), Value::String(new.into()));
         }
     };
-    set("order", previous.map(|p| p.order.as_str()), Some(&row.order));
-    set("header", previous.and_then(|p| p.header.as_deref()), row.header.as_deref());
-    set("label", previous.map(|p| p.label.as_str()), Some(&row.label));
+    set("order", previous.map(|p| p.order.as_str()), &row.order);
+    set("header", previous.map(|p| p.header.as_str()), &row.header);
     patch
 }
 
@@ -102,32 +101,27 @@ mod tests {
         }
     }
 
-    fn row(pane_id: &str, order: &str, header: Option<&str>, label: &str) -> Row {
-        Row {
-            pane_id: pane_id.into(),
-            order: order.into(),
-            header: header.map(Into::into),
-            label: label.into(),
-        }
+    fn row(pane_id: &str, order: &str, header: &str) -> Row {
+        Row { pane_id: pane_id.into(), order: order.into(), header: header.into() }
     }
 
     #[test]
     fn first_report_sends_every_token() {
         let herdr = FakeHerdr::default();
-        Sync::new("plugin:test").apply(&herdr, vec![row("w1:p1", "0000-0000", Some("api"), "a")]);
+        Sync::new("plugin:test").apply(&herdr, vec![row("w1:p1", "0000-0000", "api")]);
         let calls = herdr.take();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["source"], "plugin:test");
-        assert_eq!(calls[0]["tokens"], json!({ "order": "0000-0000", "header": "api", "label": "a" }));
+        assert_eq!(calls[0]["tokens"], json!({ "order": "0000-0000", "header": "api" }));
     }
 
     #[test]
     fn unchanged_rows_send_nothing() {
         let herdr = FakeHerdr::default();
         let mut sync = Sync::new("plugin:test");
-        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", Some("api"), "a")]);
+        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", "api")]);
         herdr.take();
-        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", Some("api"), "a")]);
+        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", "api")]);
         assert!(herdr.take().is_empty());
     }
 
@@ -135,43 +129,43 @@ mod tests {
     fn only_changed_tokens_are_sent() {
         let herdr = FakeHerdr::default();
         let mut sync = Sync::new("plugin:test");
-        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", Some("api"), "a")]);
+        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", "api")]);
         herdr.take();
-        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", Some("api"), "b")]);
-        assert_eq!(herdr.take()[0]["tokens"], json!({ "label": "b" }));
+        sync.apply(&herdr, vec![row("w1:p1", "0000-0001", "api")]);
+        assert_eq!(herdr.take()[0]["tokens"], json!({ "order": "0000-0001" }));
     }
 
     #[test]
-    fn lost_header_is_cleared() {
+    fn header_change_is_sent() {
         let herdr = FakeHerdr::default();
         let mut sync = Sync::new("plugin:test");
-        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", Some("api"), "a")]);
+        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", "api")]);
         herdr.take();
-        sync.apply(&herdr, vec![row("w1:p1", "0000-0001", None, "a")]);
-        assert_eq!(herdr.take()[0]["tokens"], json!({ "order": "0000-0001", "header": null }));
+        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", "\u{200b}")]);
+        assert_eq!(herdr.take()[0]["tokens"], json!({ "header": "\u{200b}" }));
     }
 
     #[test]
     fn vanished_panes_are_cleared() {
         let herdr = FakeHerdr::default();
         let mut sync = Sync::new("plugin:test");
-        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", Some("api"), "a")]);
+        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", "api")]);
         herdr.take();
         sync.apply(&herdr, vec![]);
         let calls = herdr.take();
         assert_eq!(calls[0]["pane_id"], "w1:p1");
-        assert_eq!(calls[0]["tokens"], json!({ "order": null, "header": null, "label": null }));
+        assert_eq!(calls[0]["tokens"], json!({ "order": null, "header": null }));
     }
 
     #[test]
     fn failed_report_is_retried_next_time() {
         let failing = FakeHerdr { failing_pane: Some("w1:p1"), ..FakeHerdr::default() };
         let mut sync = Sync::new("plugin:test");
-        let errors = sync.apply(&failing, vec![row("w1:p1", "0000-0000", Some("api"), "a")]);
+        let errors = sync.apply(&failing, vec![row("w1:p1", "0000-0000", "api")]);
         assert_eq!(errors.len(), 1);
 
         let herdr = FakeHerdr::default();
-        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", Some("api"), "a")]);
+        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", "api")]);
         assert_eq!(herdr.take().len(), 1);
     }
 
@@ -179,7 +173,7 @@ mod tests {
     fn clear_all_clears_every_reported_pane() {
         let herdr = FakeHerdr::default();
         let mut sync = Sync::new("plugin:test");
-        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", Some("api"), "a"), row("w1:p2", "0000-0001", None, "b")]);
+        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", "api"), row("w1:p2", "0000-0001", "\u{200b}")]);
         herdr.take();
         sync.clear_all(&herdr);
         let mut panes: Vec<String> = herdr.take().iter().map(|call| call["pane_id"].as_str().unwrap().into()).collect();

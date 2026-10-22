@@ -2,16 +2,13 @@ use std::path::Path;
 
 use crate::model::Agent;
 
-const ZERO_WIDTH_SPACE: char = '\u{200b}';
-const HEADER_ROW_INDENT: &str = "  ";
-const FIRST_ROW_INDENT: &str = "    ";
+pub const SPACER_HEADER: &str = "\u{200b}";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub pane_id: String,
     pub order: String,
-    pub header: Option<String>,
-    pub label: String,
+    pub header: String,
 }
 
 struct Group<'a> {
@@ -36,24 +33,13 @@ pub fn layout(agents: &[Agent], mut name_of: impl FnMut(&Path) -> String) -> Vec
         .iter()
         .enumerate()
         .flat_map(|(group_index, group)| {
-            let last = group.members.len() - 1;
-            group.members.iter().enumerate().map(move |(member_index, agent)| {
-                let first = member_index == 0;
-                Row {
-                    pane_id: agent.pane_id.clone(),
-                    order: format!("{group_index:04}-{member_index:04}"),
-                    header: first.then(|| group.name.clone()),
-                    label: label(&agent.title, first, member_index == last),
-                }
+            group.members.iter().enumerate().map(move |(member_index, agent)| Row {
+                pane_id: agent.pane_id.clone(),
+                order: format!("{group_index:04}-{member_index:04}"),
+                header: if member_index == 0 { group.name.clone() } else { SPACER_HEADER.to_string() },
             })
         })
         .collect()
-}
-
-fn label(title: &str, has_header: bool, is_last: bool) -> String {
-    let indent = if has_header { HEADER_ROW_INDENT } else { FIRST_ROW_INDENT };
-    let branch = if is_last { '└' } else { '├' };
-    format!("{ZERO_WIDTH_SPACE}{indent}{branch} {title}")
 }
 
 #[cfg(test)]
@@ -66,7 +52,6 @@ mod tests {
         Agent {
             pane_id: pane_id.to_string(),
             cwd: PathBuf::from(cwd),
-            title: format!("title {pane_id}"),
             position: Position { workspace, tab: workspace, pane },
         }
     }
@@ -77,6 +62,12 @@ mod tests {
 
     fn row<'a>(rows: &'a [Row], pane_id: &str) -> &'a Row {
         rows.iter().find(|row| row.pane_id == pane_id).unwrap()
+    }
+
+    fn panes_in_order(rows: &[Row]) -> Vec<&str> {
+        let mut orders: Vec<(&str, &str)> = rows.iter().map(|r| (r.order.as_str(), r.pane_id.as_str())).collect();
+        orders.sort();
+        orders.into_iter().map(|(_, pane)| pane).collect()
     }
 
     fn sample() -> Vec<Row> {
@@ -92,37 +83,28 @@ mod tests {
     }
 
     #[test]
-    fn header_only_on_first_member_of_each_group() {
+    fn first_member_of_each_group_gets_the_group_name() {
         let rows = sample();
-        assert_eq!(row(&rows, "web-1").header.as_deref(), Some("web"));
-        assert_eq!(row(&rows, "api-1").header.as_deref(), Some("api"));
-        assert_eq!(row(&rows, "api-2").header, None);
-        assert_eq!(row(&rows, "api-3").header, None);
+        assert_eq!(row(&rows, "web-1").header, "web");
+        assert_eq!(row(&rows, "api-1").header, "api");
     }
 
     #[test]
-    fn last_member_gets_the_closing_branch() {
+    fn other_members_get_a_spacer_header() {
         let rows = sample();
-        assert!(row(&rows, "api-1").label.contains('├'));
-        assert!(row(&rows, "api-2").label.contains('├'));
-        assert!(row(&rows, "api-3").label.contains('└'));
-        assert!(row(&rows, "web-1").label.contains('└'));
+        assert_eq!(row(&rows, "api-2").header, SPACER_HEADER);
+        assert_eq!(row(&rows, "api-3").header, SPACER_HEADER);
     }
 
     #[test]
-    fn rows_without_header_get_two_more_spaces() {
-        let rows = sample();
-        assert_eq!(row(&rows, "api-1").label, "\u{200b}  ├ title api-1");
-        assert_eq!(row(&rows, "api-2").label, "\u{200b}    ├ title api-2");
+    fn spacer_header_survives_whitespace_trimming() {
+        assert_eq!(SPACER_HEADER.trim(), SPACER_HEADER);
+        assert!(!SPACER_HEADER.is_empty());
     }
 
     #[test]
     fn groups_follow_workspace_order() {
-        let rows = sample();
-        let mut orders: Vec<(&str, &str)> = rows.iter().map(|r| (r.order.as_str(), r.pane_id.as_str())).collect();
-        orders.sort();
-        let panes: Vec<&str> = orders.into_iter().map(|(_, pane)| pane).collect();
-        assert_eq!(panes, ["web-1", "api-1", "api-2", "api-3"]);
+        assert_eq!(panes_in_order(&sample()), ["web-1", "api-1", "api-2", "api-3"]);
     }
 
     #[test]
@@ -135,10 +117,7 @@ mod tests {
             ],
             folder,
         );
-        let mut orders: Vec<(&str, &str)> = rows.iter().map(|r| (r.order.as_str(), r.pane_id.as_str())).collect();
-        orders.sort();
-        let panes: Vec<&str> = orders.into_iter().map(|(_, pane)| pane).collect();
-        assert_eq!(panes, ["api-1", "api-2", "web-1"]);
+        assert_eq!(panes_in_order(&rows), ["api-1", "api-2", "web-1"]);
     }
 
     #[test]

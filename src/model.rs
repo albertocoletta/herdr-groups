@@ -7,7 +7,6 @@ use serde::Deserialize;
 pub struct Agent {
     pub pane_id: String,
     pub cwd: PathBuf,
-    pub title: String,
     pub position: Position,
 }
 
@@ -28,13 +27,11 @@ struct Snapshot {
 
 #[derive(Deserialize)]
 struct RawAgent {
-    agent: Option<String>,
     pane_id: String,
     tab_id: String,
     workspace_id: String,
     cwd: Option<PathBuf>,
     foreground_cwd: Option<PathBuf>,
-    terminal_title_stripped: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -64,11 +61,6 @@ pub fn agents(snapshot: serde_json::Value) -> Result<Vec<Agent>, serde_json::Err
         .into_iter()
         .filter_map(|raw| {
             let cwd = raw.foreground_cwd.or(raw.cwd)?;
-            let title = raw
-                .terminal_title_stripped
-                .filter(|title| !title.trim().is_empty())
-                .or(raw.agent)
-                .unwrap_or_default();
             Some(Agent {
                 position: Position {
                     workspace: position_in(&workspaces, &raw.workspace_id),
@@ -77,7 +69,6 @@ pub fn agents(snapshot: serde_json::Value) -> Result<Vec<Agent>, serde_json::Err
                 },
                 pane_id: raw.pane_id,
                 cwd,
-                title,
             })
         })
         .collect())
@@ -113,16 +104,6 @@ mod tests {
     #[test]
     fn falls_back_to_pane_cwd() {
         assert_eq!(agent(&fixture(), "wB:p1").cwd, PathBuf::from("/home/dev/projects/web"));
-    }
-
-    #[test]
-    fn uses_stripped_terminal_title() {
-        assert_eq!(agent(&fixture(), "wA:p2").title, "Refactor auth");
-    }
-
-    #[test]
-    fn falls_back_to_agent_name_without_title() {
-        assert_eq!(agent(&fixture(), "wB:p1").title, "codex");
     }
 
     #[test]
