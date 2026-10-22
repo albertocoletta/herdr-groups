@@ -14,6 +14,7 @@ use daemon::Daemon;
 use herdr::Client;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn main() -> ExitCode {
     let Some(state_dir) = std::env::var_os("HERDR_PLUGIN_STATE_DIR").map(PathBuf::from) else {
@@ -23,8 +24,12 @@ fn main() -> ExitCode {
 
     match std::env::args().nth(1).as_deref() {
         None | Some("start") => start(state_dir),
-        Some("stop") => match daemon::request_stop(&state_dir) {
-            Ok(()) => ExitCode::SUCCESS,
+        Some("stop") => match daemon::request_stop(&state_dir, STOP_TIMEOUT) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => {
+                eprintln!("groups: still running after {STOP_TIMEOUT:?}");
+                ExitCode::FAILURE
+            }
             Err(error) => {
                 eprintln!("groups: cannot request stop: {error}");
                 ExitCode::FAILURE

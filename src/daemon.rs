@@ -1,6 +1,8 @@
 use std::fs::{self, File, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -13,6 +15,7 @@ use crate::sync::Sync;
 const LOCK_FILE: &str = "daemon.lock";
 const STOP_FILE: &str = "stop";
 const SOCKET_FAILURES_BEFORE_EXIT: u32 = 3;
+const STOP_POLL: Duration = Duration::from_millis(50);
 
 pub fn lock(state_dir: &Path) -> io::Result<Option<File>> {
     fs::create_dir_all(state_dir)?;
@@ -24,7 +27,22 @@ pub fn lock(state_dir: &Path) -> io::Result<Option<File>> {
     }
 }
 
-pub fn request_stop(state_dir: &Path) -> io::Result<()> {
+pub fn request_stop(state_dir: &Path, timeout: Duration) -> io::Result<bool> {
+    write_stop_request(state_dir)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if lock(state_dir)?.is_some() {
+            let _ = fs::remove_file(state_dir.join(STOP_FILE));
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        thread::sleep(STOP_POLL);
+    }
+}
+
+fn write_stop_request(state_dir: &Path) -> io::Result<()> {
     fs::create_dir_all(state_dir)?;
     File::create(state_dir.join(STOP_FILE)).map(|_| ())
 }
@@ -158,7 +176,7 @@ mod tests {
         move || {
             waited += 1;
             if waited == ticks {
-                request_stop(&state_dir).unwrap();
+                write_stop_request(&state_dir).unwrap();
             }
         }
     }
@@ -175,6 +193,34 @@ mod tests {
         let dir = TempDir::new().unwrap();
         drop(lock(dir.path()).unwrap().unwrap());
         assert!(lock(dir.path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn stop_waits_until_the_running_instance_releases_its_lock() {
+        let dir = TempDir::new().unwrap();
+        let held = lock(dir.path()).unwrap().unwrap();
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            drop(held);
+        });
+        let started = Instant::now();
+        assert!(request_stop(dir.path(), Duration::from_secs(3)).unwrap());
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        releaser.join().unwrap();
+    }
+
+    #[test]
+    fn stop_gives_up_after_the_timeout() {
+        let dir = TempDir::new().unwrap();
+        let _held = lock(dir.path()).unwrap().unwrap();
+        assert!(!request_stop(dir.path(), Duration::from_millis(200)).unwrap());
+    }
+
+    #[test]
+    fn stop_without_a_running_instance_leaves_no_stop_request() {
+        let dir = TempDir::new().unwrap();
+        assert!(request_stop(dir.path(), Duration::from_secs(3)).unwrap());
+        assert!(!dir.path().join(STOP_FILE).exists());
     }
 
     #[test]
@@ -208,7 +254,7 @@ mod tests {
     #[test]
     fn stale_stop_request_is_ignored_at_start() {
         let dir = TempDir::new().unwrap();
-        request_stop(dir.path()).unwrap();
+        write_stop_request(dir.path()).unwrap();
         let herdr = FakeHerdr::default();
         Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(stop_after(dir.path(), 1));
         assert_eq!(herdr.count("session.snapshot"), 1);
