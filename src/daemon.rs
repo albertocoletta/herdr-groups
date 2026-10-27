@@ -14,6 +14,7 @@ use crate::sync::Sync;
 
 const LOCK_FILE: &str = "daemon.lock";
 const STOP_FILE: &str = "stop";
+const OFF_FILE: &str = "off";
 const SOCKET_FAILURES_BEFORE_EXIT: u32 = 3;
 const STOP_POLL: Duration = Duration::from_millis(50);
 
@@ -28,6 +29,9 @@ pub fn lock(state_dir: &Path) -> io::Result<Option<File>> {
 }
 
 pub fn lock_for_start(state_dir: &Path, timeout: Duration) -> io::Result<Option<File>> {
+    if state_dir.join(OFF_FILE).exists() {
+        return Ok(None);
+    }
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(file) = lock(state_dir)? {
@@ -60,6 +64,25 @@ pub fn request_stop(state_dir: &Path, timeout: Duration) -> io::Result<bool> {
     }
 }
 
+#[derive(Debug)]
+pub enum Toggle {
+    Start(File),
+    Stopped,
+    StillRunning,
+}
+
+pub fn toggle(state_dir: &Path, timeout: Duration) -> io::Result<Toggle> {
+    let off_file = state_dir.join(OFF_FILE);
+    if let Some(lock) = lock(state_dir)? {
+        if off_file.exists() {
+            fs::remove_file(&off_file)?;
+        }
+        return Ok(Toggle::Start(lock));
+    }
+    File::create(&off_file)?;
+    Ok(if request_stop(state_dir, timeout)? { Toggle::Stopped } else { Toggle::StillRunning })
+}
+
 fn write_stop_request(state_dir: &Path) -> io::Result<()> {
     fs::create_dir_all(state_dir)?;
     File::create(state_dir.join(STOP_FILE)).map(|_| ())
@@ -70,6 +93,12 @@ pub enum Exit {
     Stopped,
     SocketGone,
     ViewRejected,
+    ViewLost,
+}
+
+enum Tick {
+    Synced,
+    ViewLost,
 }
 
 pub struct Daemon<H: Herdr> {
@@ -106,7 +135,11 @@ impl<H: Herdr> Daemon<H> {
                 return Exit::Stopped;
             }
             match self.tick() {
-                Ok(()) => socket_failures = 0,
+                Ok(Tick::Synced) => socket_failures = 0,
+                Ok(Tick::ViewLost) => {
+                    self.sync.clear_all(&self.herdr);
+                    return Exit::ViewLost;
+                }
                 Err(Error::Io(error)) => {
                     socket_failures += 1;
                     if socket_failures >= SOCKET_FAILURES_BEFORE_EXIT {
@@ -131,7 +164,16 @@ impl<H: Herdr> Daemon<H> {
         )
     }
 
-    fn tick(&mut self) -> Result<(), Error> {
+    fn view_is_ours(&self) -> Result<bool, Error> {
+        let probe_source = format!("{}.probe", self.source);
+        let view = self.herdr.call("agent.view.clear", json!({ "source": probe_source }))?;
+        Ok(view["active"] == true && view["source"] == self.source.as_str())
+    }
+
+    fn tick(&mut self) -> Result<Tick, Error> {
+        if !self.view_is_ours()? {
+            return Ok(Tick::ViewLost);
+        }
         let mut result = self.herdr.call("session.snapshot", json!({}))?;
         let snapshot = result.get_mut("snapshot").map(Value::take).unwrap_or(Value::Null);
         let agents = model::agents(snapshot).map_err(|error| Error::Protocol(error.to_string()))?;
@@ -139,7 +181,7 @@ impl<H: Herdr> Daemon<H> {
         for error in self.sync.apply(&self.herdr, rows) {
             eprintln!("groups: {error}");
         }
-        Ok(())
+        Ok(Tick::Synced)
     }
 }
 
@@ -152,23 +194,50 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct FakeHerdr {
-        calls: Rc<RefCell<Vec<String>>>,
+        calls: Rc<RefCell<Vec<(String, Value)>>>,
+        view_source: Rc<RefCell<Option<String>>>,
         socket_gone: bool,
         reject_view: bool,
     }
 
     impl FakeHerdr {
         fn count(&self, method: &str) -> usize {
-            self.calls.borrow().iter().filter(|call| *call == method).count()
+            self.calls.borrow().iter().filter(|(called, _)| called == method).count()
+        }
+
+        fn last_method(&self) -> String {
+            self.calls.borrow().last().unwrap().0.clone()
+        }
+
+        fn hand_view_to(&self, source: Option<&str>) {
+            *self.view_source.borrow_mut() = source.map(String::from);
+        }
+
+        fn view_response(&self) -> Value {
+            match self.view_source.borrow().as_deref() {
+                Some(source) => json!({ "type": "agent_view", "active": true, "source": source }),
+                None => json!({ "type": "agent_view", "active": false }),
+            }
         }
     }
 
     impl Herdr for FakeHerdr {
-        fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
-            self.calls.borrow_mut().push(method.to_string());
+        fn call(&self, method: &str, params: Value) -> Result<Value, Error> {
+            self.calls.borrow_mut().push((method.to_string(), params.clone()));
             match method {
                 "agent.view.set" if self.reject_view => {
                     Err(Error::Herdr { code: "plugin_disabled".into(), message: String::new() })
+                }
+                "agent.view.set" => {
+                    self.hand_view_to(params["source"].as_str());
+                    Ok(self.view_response())
+                }
+                "agent.view.clear" => {
+                    let owner = self.view_source.borrow().clone();
+                    if params["source"].is_null() || params["source"].as_str() == owner.as_deref() {
+                        self.hand_view_to(None);
+                    }
+                    Ok(self.view_response())
                 }
                 "session.snapshot" if self.socket_gone => {
                     Err(Error::Io(io::Error::from(io::ErrorKind::ConnectionRefused)))
@@ -270,7 +339,64 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let herdr = FakeHerdr::default();
         Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(stop_after(dir.path(), 1));
-        assert_eq!(herdr.calls.borrow().last().unwrap(), "agent.view.clear");
+        assert_eq!(herdr.last_method(), "agent.view.clear");
+        assert_eq!(*herdr.view_source.borrow(), None);
+    }
+
+    fn lose_view_after(
+        herdr: &FakeHerdr,
+        state_dir: &Path,
+        ticks: usize,
+        new_owner: Option<&'static str>,
+    ) -> impl FnMut() {
+        let herdr = herdr.clone();
+        let mut stop_eventually = stop_after(state_dir, ticks + 3);
+        let mut waited = 0;
+        move || {
+            waited += 1;
+            if waited == ticks {
+                herdr.hand_view_to(new_owner);
+            }
+            stop_eventually();
+        }
+    }
+
+    fn cleared_panes(herdr: &FakeHerdr) -> usize {
+        herdr
+            .calls
+            .borrow()
+            .iter()
+            .filter(|(method, params)| method == "pane.report_metadata" && params["tokens"]["header"].is_null())
+            .count()
+    }
+
+    #[test]
+    fn lost_view_clears_tokens_and_exits() {
+        let dir = TempDir::new().unwrap();
+        let herdr = FakeHerdr::default();
+        let exit =
+            Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(lose_view_after(&herdr, dir.path(), 1, None));
+        assert_eq!(exit, Exit::ViewLost);
+        assert_eq!(herdr.count("session.snapshot"), 1);
+        assert_eq!(cleared_panes(&herdr), 1);
+    }
+
+    #[test]
+    fn view_taken_by_another_source_counts_as_lost() {
+        let dir = TempDir::new().unwrap();
+        let herdr = FakeHerdr::default();
+        let exit = Daemon::new(herdr.clone(), "plugin:test".into(), dir.path())
+            .run(lose_view_after(&herdr, dir.path(), 1, Some("plugin:other")));
+        assert_eq!(exit, Exit::ViewLost);
+        assert_eq!(*herdr.view_source.borrow(), Some("plugin:other".into()));
+    }
+
+    #[test]
+    fn checking_the_view_leaves_it_in_place() {
+        let dir = TempDir::new().unwrap();
+        let herdr = FakeHerdr::default();
+        Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(lose_view_after(&herdr, dir.path(), 2, None));
+        assert_eq!(herdr.count("session.snapshot"), 2);
     }
 
     #[test]
@@ -324,6 +450,44 @@ mod tests {
         let herdr = FakeHerdr::default();
         Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(stop_after(dir.path(), 1));
         assert_eq!(herdr.count("session.snapshot"), 1);
+    }
+
+    #[test]
+    fn toggle_while_running_turns_groups_off() {
+        let dir = TempDir::new().unwrap();
+        let held = lock(dir.path()).unwrap().unwrap();
+        let stop_file = dir.path().join(STOP_FILE);
+        let daemon = thread::spawn(move || {
+            while !stop_file.exists() {
+                thread::sleep(Duration::from_millis(10));
+            }
+            drop(held);
+        });
+        assert!(matches!(toggle(dir.path(), Duration::from_secs(3)).unwrap(), Toggle::Stopped));
+        assert!(dir.path().join(OFF_FILE).exists());
+        daemon.join().unwrap();
+    }
+
+    #[test]
+    fn toggle_while_idle_turns_groups_back_on() {
+        let dir = TempDir::new().unwrap();
+        File::create(dir.path().join(OFF_FILE)).unwrap();
+        assert!(matches!(toggle(dir.path(), Duration::from_secs(3)).unwrap(), Toggle::Start(_)));
+        assert!(!dir.path().join(OFF_FILE).exists());
+    }
+
+    #[test]
+    fn toggle_on_keeps_the_lock_for_the_new_daemon() {
+        let dir = TempDir::new().unwrap();
+        let _toggled = toggle(dir.path(), Duration::from_secs(3)).unwrap();
+        assert!(lock(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn start_does_nothing_while_groups_is_off() {
+        let dir = TempDir::new().unwrap();
+        File::create(dir.path().join(OFF_FILE)).unwrap();
+        assert!(lock_for_start(dir.path(), Duration::from_secs(3)).unwrap().is_none());
     }
 
     #[test]

@@ -5,12 +5,13 @@ mod model;
 mod project;
 mod sync;
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
-use daemon::Daemon;
+use daemon::{Daemon, Toggle};
 use herdr::Client;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -35,29 +36,44 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("toggle") => match daemon::toggle(&state_dir, STOP_TIMEOUT) {
+            Ok(Toggle::Start(lock)) => run(&state_dir, lock),
+            Ok(Toggle::Stopped) => ExitCode::SUCCESS,
+            Ok(Toggle::StillRunning) => {
+                eprintln!("groups: still running after {STOP_TIMEOUT:?}");
+                ExitCode::FAILURE
+            }
+            Err(error) => {
+                eprintln!("groups: cannot toggle: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some(other) => {
-            eprintln!("groups: unknown command '{other}' (start | stop)");
+            eprintln!("groups: unknown command '{other}' (start | stop | toggle)");
             ExitCode::FAILURE
         }
     }
 }
 
 fn start(state_dir: PathBuf) -> ExitCode {
+    match daemon::lock_for_start(&state_dir, STOP_TIMEOUT) {
+        Ok(Some(lock)) => run(&state_dir, lock),
+        Ok(None) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("groups: cannot lock {}: {error}", state_dir.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(state_dir: &Path, _lock: File) -> ExitCode {
     let Some(client) = Client::from_env() else {
         eprintln!("groups: HERDR_SOCKET_PATH is not set");
         return ExitCode::FAILURE;
     };
-    let _lock = match daemon::lock_for_start(&state_dir, STOP_TIMEOUT) {
-        Ok(Some(lock)) => lock,
-        Ok(None) => return ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("groups: cannot lock {}: {error}", state_dir.display());
-            return ExitCode::FAILURE;
-        }
-    };
     let plugin_id = std::env::var("HERDR_PLUGIN_ID").unwrap_or_else(|_| "albertocoletta.groups".into());
 
-    let exit = Daemon::new(client, format!("plugin:{plugin_id}"), &state_dir).run(|| thread::sleep(POLL_INTERVAL));
+    let exit = Daemon::new(client, format!("plugin:{plugin_id}"), state_dir).run(|| thread::sleep(POLL_INTERVAL));
     eprintln!("groups: exited ({exit:?})");
     ExitCode::SUCCESS
 }
