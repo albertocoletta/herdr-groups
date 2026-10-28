@@ -158,7 +158,7 @@ mod tests {
         sync.apply(&herdr, vec![]);
         let calls = herdr.take();
         assert_eq!(calls[0]["pane_id"], "w1:p1");
-        assert_eq!(calls[0]["tokens"], json!({ "order": null, "header": null, "worktree": null, "gap": null }));
+        assert_eq!(calls[0]["tokens"], json!({ "order": null, "header": null, "worktree": null, "divider": null }));
     }
 
     #[test]

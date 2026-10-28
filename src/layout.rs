@@ -5,7 +5,8 @@ use crate::model::Agent;
 use crate::project::Project;
 
 pub const SPACER: &str = "\u{200b}";
-pub const TOKENS: [&str; 4] = ["order", "header", "worktree", "gap"];
+pub const TOKENS: [&str; 4] = ["order", "header", "worktree", "divider"];
+const DIVIDER_WIDTH: usize = 36;
 
 pub type Tokens = BTreeMap<&'static str, String>;
 
@@ -39,30 +40,26 @@ pub fn layout(agents: &[Agent], mut project_of: impl FnMut(&Path) -> Project) ->
         }
     }
 
+    let last_group_index = groups.len().saturating_sub(1);
     groups
         .iter()
         .enumerate()
         .flat_map(|(group_index, group)| {
-            group.members.iter().enumerate().map(move |(member_index, member)| Row {
-                pane_id: member.agent.pane_id.clone(),
-                tokens: tokens(group_index, member_index, &group.name, member),
+            let last_member_index = group.members.len() - 1;
+            group.members.iter().enumerate().map(move |(member_index, member)| {
+                let mut tokens = Tokens::new();
+                tokens.insert("order", format!("{group_index:04}-{member_index:04}"));
+                tokens.insert("header", if member_index == 0 { group.name.clone() } else { SPACER.to_string() });
+                if let Some(folder) = &member.worktree {
+                    tokens.insert("worktree", format!("wt {folder}"));
+                }
+                if member_index == last_member_index && group_index < last_group_index {
+                    tokens.insert("divider", "─".repeat(DIVIDER_WIDTH));
+                }
+                Row { pane_id: member.agent.pane_id.clone(), tokens }
             })
         })
         .collect()
-}
-
-fn tokens(group_index: usize, member_index: usize, group_name: &str, member: &Member) -> Tokens {
-    let opens_group = member_index == 0;
-    let mut tokens = Tokens::new();
-    tokens.insert("order", format!("{group_index:04}-{member_index:04}"));
-    tokens.insert("header", if opens_group { group_name.to_string() } else { SPACER.to_string() });
-    if let Some(folder) = &member.worktree {
-        tokens.insert("worktree", format!("wt {folder}"));
-    }
-    if opens_group && group_index > 0 {
-        tokens.insert("gap", SPACER.to_string());
-    }
-    tokens
 }
 
 #[cfg(test)]
@@ -173,12 +170,21 @@ mod tests {
     }
 
     #[test]
-    fn gap_opens_every_group_but_the_first() {
-        let rows = sample();
-        assert_eq!(token(&rows, "web-1", "gap"), None);
-        assert_eq!(token(&rows, "api-1", "gap"), Some(SPACER));
-        assert_eq!(token(&rows, "api-2", "gap"), None);
-        assert_eq!(token(&rows, "api-3", "gap"), None);
+    fn divider_closes_every_group_but_the_last() {
+        let rows = layout(
+            &[
+                agent("api-1", "/p/api", 0, 0),
+                agent("api-2", "/p/api", 0, 1),
+                agent("web-1", "/p/web", 1, 2),
+                agent("cli-1", "/p/cli", 2, 3),
+            ],
+            folder,
+        );
+        let divider = "─".repeat(DIVIDER_WIDTH);
+        assert_eq!(token(&rows, "api-1", "divider"), None);
+        assert_eq!(token(&rows, "api-2", "divider"), Some(divider.as_str()));
+        assert_eq!(token(&rows, "web-1", "divider"), Some(divider.as_str()));
+        assert_eq!(token(&rows, "cli-1", "divider"), None);
     }
 
     #[test]
