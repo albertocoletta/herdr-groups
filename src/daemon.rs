@@ -177,7 +177,7 @@ impl<H: Herdr> Daemon<H> {
         let mut result = self.herdr.call("session.snapshot", json!({}))?;
         let snapshot = result.get_mut("snapshot").map(Value::take).unwrap_or(Value::Null);
         let agents = model::agents(snapshot).map_err(|error| Error::Protocol(error.to_string()))?;
-        let rows = layout(&agents, |cwd| self.projects.name_for(cwd));
+        let rows = layout(&agents, |cwd| self.projects.project_for(cwd));
         for error in self.sync.apply(&self.herdr, rows) {
             eprintln!("groups: {error}");
         }

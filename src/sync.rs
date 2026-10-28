@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 use crate::herdr::{Error, Herdr};
 use crate::layout::Row;
 
-pub const TOKENS: [&str; 2] = ["order", "header"];
+pub const TOKENS: [&str; 3] = ["order", "header", "worktree"];
 
 pub struct Sync {
     source: String,
@@ -63,13 +63,14 @@ impl Sync {
 
 fn changes(previous: Option<&Row>, row: &Row) -> Map<String, Value> {
     let mut patch = Map::new();
-    let mut set = |token: &str, old: Option<&str>, new: &str| {
-        if old != Some(new) {
-            patch.insert(token.to_string(), Value::String(new.into()));
+    let mut set = |token: &str, old: Option<&str>, new: Option<&str>| {
+        if old != new {
+            patch.insert(token.to_string(), new.map_or(Value::Null, |new| Value::String(new.into())));
         }
     };
-    set("order", previous.map(|p| p.order.as_str()), &row.order);
-    set("header", previous.map(|p| p.header.as_str()), &row.header);
+    set("order", previous.map(|p| p.order.as_str()), Some(&row.order));
+    set("header", previous.map(|p| p.header.as_str()), Some(&row.header));
+    set("worktree", previous.and_then(|p| p.worktree.as_deref()), row.worktree.as_deref());
     patch
 }
 
@@ -102,7 +103,11 @@ mod tests {
     }
 
     fn row(pane_id: &str, order: &str, header: &str) -> Row {
-        Row { pane_id: pane_id.into(), order: order.into(), header: header.into() }
+        Row { pane_id: pane_id.into(), order: order.into(), header: header.into(), worktree: None }
+    }
+
+    fn worktree_row(pane_id: &str, worktree: &str) -> Row {
+        Row { worktree: Some(worktree.into()), ..row(pane_id, "0000-0000", "api") }
     }
 
     #[test]
@@ -154,7 +159,25 @@ mod tests {
         sync.apply(&herdr, vec![]);
         let calls = herdr.take();
         assert_eq!(calls[0]["pane_id"], "w1:p1");
-        assert_eq!(calls[0]["tokens"], json!({ "order": null, "header": null }));
+        assert_eq!(calls[0]["tokens"], json!({ "order": null, "header": null, "worktree": null }));
+    }
+
+    #[test]
+    fn worktree_is_sent_when_set() {
+        let herdr = FakeHerdr::default();
+        Sync::new("plugin:test").apply(&herdr, vec![worktree_row("w1:p1", "wt fix-x")]);
+        assert_eq!(herdr.take()[0]["tokens"]["worktree"], "wt fix-x");
+    }
+
+    #[test]
+    fn worktree_is_cleared_when_unset() {
+        let herdr = FakeHerdr::default();
+        let mut sync = Sync::new("plugin:test");
+        sync.apply(&herdr, vec![worktree_row("w1:p1", "wt fix-x")]);
+        herdr.take();
+        sync.apply(&herdr, vec![row("w1:p1", "0000-0000", "api")]);
+        let tokens: Vec<Value> = herdr.take().iter().map(|call| call["tokens"].clone()).collect();
+        assert_eq!(tokens, [json!({ "worktree": null })]);
     }
 
     #[test]

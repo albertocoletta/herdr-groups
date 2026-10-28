@@ -2,17 +2,23 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    pub name: String,
+    pub worktree: Option<String>,
+}
+
 pub struct Projects {
-    names: HashMap<PathBuf, String>,
+    projects: HashMap<PathBuf, Project>,
 }
 
 impl Projects {
     pub fn new() -> Self {
-        Self { names: HashMap::new() }
+        Self { projects: HashMap::new() }
     }
 
-    pub fn name_for(&mut self, cwd: &Path) -> String {
-        self.names
+    pub fn project_for(&mut self, cwd: &Path) -> Project {
+        self.projects
             .entry(cwd.to_path_buf())
             .or_insert_with(|| resolve(cwd))
             .clone()
@@ -25,11 +31,16 @@ struct Checkout {
     common_dir: PathBuf,
 }
 
-fn resolve(cwd: &Path) -> String {
+fn resolve(cwd: &Path) -> Project {
     match checkout(cwd) {
-        Some(checkout) if checkout.git_dir == checkout.common_dir => folder_name(&checkout.toplevel),
-        Some(checkout) => format!("{}/{}", repo_name(&checkout.common_dir), folder_name(&checkout.toplevel)),
-        None => folder_name(cwd),
+        Some(checkout) if checkout.git_dir == checkout.common_dir => {
+            Project { name: folder_name(&checkout.toplevel), worktree: None }
+        }
+        Some(checkout) => Project {
+            name: repo_name(&checkout.common_dir),
+            worktree: Some(folder_name(&checkout.toplevel)),
+        },
+        None => Project { name: folder_name(cwd), worktree: None },
     }
 }
 
@@ -96,11 +107,15 @@ mod tests {
         path
     }
 
+    fn project(name: &str, worktree: Option<&str>) -> Project {
+        Project { name: name.to_string(), worktree: worktree.map(String::from) }
+    }
+
     #[test]
     fn main_checkout_uses_its_folder_name() {
         let root = TempDir::new().unwrap();
         let api = repo(&root, "api");
-        assert_eq!(Projects::new().name_for(&api), "api");
+        assert_eq!(Projects::new().project_for(&api), project("api", None));
     }
 
     #[test]
@@ -108,16 +123,16 @@ mod tests {
         let root = TempDir::new().unwrap();
         let src = repo(&root, "api").join("src");
         fs::create_dir(&src).unwrap();
-        assert_eq!(Projects::new().name_for(&src), "api");
+        assert_eq!(Projects::new().project_for(&src), project("api", None));
     }
 
     #[test]
-    fn worktree_is_named_after_repo_and_folder() {
+    fn worktree_belongs_to_its_repo() {
         let root = TempDir::new().unwrap();
         let api = repo(&root, "api");
         let worktree = root.path().join("fix-x");
         git(&api, &["worktree", "add", "-q", "-b", "fix-x", worktree.to_str().unwrap()]);
-        assert_eq!(Projects::new().name_for(&worktree), "api/fix-x");
+        assert_eq!(Projects::new().project_for(&worktree), project("api", Some("fix-x")));
     }
 
     #[test]
@@ -125,7 +140,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let notes = root.path().join("notes");
         fs::create_dir(&notes).unwrap();
-        assert_eq!(Projects::new().name_for(&notes), "notes");
+        assert_eq!(Projects::new().project_for(&notes), project("notes", None));
     }
 
     #[test]
@@ -133,8 +148,8 @@ mod tests {
         let root = TempDir::new().unwrap();
         let api = repo(&root, "api");
         let mut projects = Projects::new();
-        projects.name_for(&api);
+        projects.project_for(&api);
         fs::rename(&api, root.path().join("renamed")).unwrap();
-        assert_eq!(projects.name_for(&api), "api");
+        assert_eq!(projects.project_for(&api).name, "api");
     }
 }

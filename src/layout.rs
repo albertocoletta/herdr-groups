@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::model::Agent;
+use crate::project::Project;
 
 pub const SPACER_HEADER: &str = "\u{200b}";
 
@@ -9,23 +10,30 @@ pub struct Row {
     pub pane_id: String,
     pub order: String,
     pub header: String,
+    pub worktree: Option<String>,
+}
+
+struct Member<'a> {
+    agent: &'a Agent,
+    worktree: Option<String>,
 }
 
 struct Group<'a> {
     name: String,
-    members: Vec<&'a Agent>,
+    members: Vec<Member<'a>>,
 }
 
-pub fn layout(agents: &[Agent], mut name_of: impl FnMut(&Path) -> String) -> Vec<Row> {
+pub fn layout(agents: &[Agent], mut project_of: impl FnMut(&Path) -> Project) -> Vec<Row> {
     let mut sorted: Vec<&Agent> = agents.iter().collect();
     sorted.sort_by_key(|agent| agent.position);
 
     let mut groups: Vec<Group> = Vec::new();
     for agent in sorted {
-        let name = name_of(&agent.cwd);
+        let Project { name, worktree } = project_of(&agent.cwd);
+        let member = Member { agent, worktree };
         match groups.iter_mut().find(|group| group.name == name) {
-            Some(group) => group.members.push(agent),
-            None => groups.push(Group { name, members: vec![agent] }),
+            Some(group) => group.members.push(member),
+            None => groups.push(Group { name, members: vec![member] }),
         }
     }
 
@@ -33,10 +41,11 @@ pub fn layout(agents: &[Agent], mut name_of: impl FnMut(&Path) -> String) -> Vec
         .iter()
         .enumerate()
         .flat_map(|(group_index, group)| {
-            group.members.iter().enumerate().map(move |(member_index, agent)| Row {
-                pane_id: agent.pane_id.clone(),
+            group.members.iter().enumerate().map(move |(member_index, member)| Row {
+                pane_id: member.agent.pane_id.clone(),
                 order: format!("{group_index:04}-{member_index:04}"),
                 header: if member_index == 0 { group.name.clone() } else { SPACER_HEADER.to_string() },
+                worktree: member.worktree.as_ref().map(|folder| format!("wt {folder}")),
             })
         })
         .collect()
@@ -56,8 +65,15 @@ mod tests {
         }
     }
 
-    fn folder(path: &Path) -> String {
-        path.file_name().unwrap().to_string_lossy().into_owned()
+    fn folder(path: &Path) -> Project {
+        Project { name: path.file_name().unwrap().to_string_lossy().into_owned(), worktree: None }
+    }
+
+    fn with_worktrees(path: &Path) -> Project {
+        match path.to_str().unwrap().split_once("@") {
+            Some((repo, worktree)) => Project { name: folder(Path::new(repo)).name, worktree: Some(worktree.into()) },
+            None => folder(path),
+        }
     }
 
     fn row<'a>(rows: &'a [Row], pane_id: &str) -> &'a Row {
@@ -118,6 +134,27 @@ mod tests {
             folder,
         );
         assert_eq!(panes_in_order(&rows), ["api-1", "api-2", "web-1"]);
+    }
+
+    #[test]
+    fn worktree_joins_its_repo_group() {
+        let rows = layout(
+            &[
+                agent("api-1", "/p/api", 0, 0),
+                agent("web-1", "/p/web", 1, 1),
+                agent("api-fix", "/p/api@fix-x", 2, 2),
+            ],
+            with_worktrees,
+        );
+        assert_eq!(panes_in_order(&rows), ["api-1", "api-fix", "web-1"]);
+        assert_eq!(row(&rows, "api-fix").header, SPACER_HEADER);
+    }
+
+    #[test]
+    fn only_worktree_rows_get_a_worktree_label() {
+        let rows = layout(&[agent("api-1", "/p/api", 0, 0), agent("api-fix", "/p/api@fix-x", 1, 1)], with_worktrees);
+        assert_eq!(row(&rows, "api-1").worktree, None);
+        assert_eq!(row(&rows, "api-fix").worktree.as_deref(), Some("wt fix-x"));
     }
 
     #[test]
