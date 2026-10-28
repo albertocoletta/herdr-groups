@@ -3,9 +3,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value, json};
 
 use crate::herdr::{Error, Herdr};
-use crate::layout::Row;
-
-pub const TOKENS: [&str; 3] = ["order", "header", "worktree"];
+use crate::layout::{Row, TOKENS};
 
 pub struct Sync {
     source: String,
@@ -62,16 +60,14 @@ impl Sync {
 }
 
 fn changes(previous: Option<&Row>, row: &Row) -> Map<String, Value> {
-    let mut patch = Map::new();
-    let mut set = |token: &str, old: Option<&str>, new: Option<&str>| {
-        if old != new {
-            patch.insert(token.to_string(), new.map_or(Value::Null, |new| Value::String(new.into())));
-        }
-    };
-    set("order", previous.map(|p| p.order.as_str()), Some(&row.order));
-    set("header", previous.map(|p| p.header.as_str()), Some(&row.header));
-    set("worktree", previous.and_then(|p| p.worktree.as_deref()), row.worktree.as_deref());
-    patch
+    TOKENS
+        .iter()
+        .filter_map(|&token| {
+            let old = previous.and_then(|p| p.tokens.get(token));
+            let new = row.tokens.get(token);
+            (old != new).then(|| (token.to_string(), new.map_or(Value::Null, |new| Value::String(new.clone()))))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -103,11 +99,14 @@ mod tests {
     }
 
     fn row(pane_id: &str, order: &str, header: &str) -> Row {
-        Row { pane_id: pane_id.into(), order: order.into(), header: header.into(), worktree: None }
+        let tokens = [("order", order.to_string()), ("header", header.to_string())].into_iter().collect();
+        Row { pane_id: pane_id.into(), tokens }
     }
 
     fn worktree_row(pane_id: &str, worktree: &str) -> Row {
-        Row { worktree: Some(worktree.into()), ..row(pane_id, "0000-0000", "api") }
+        let mut row = row(pane_id, "0000-0000", "api");
+        row.tokens.insert("worktree", worktree.into());
+        row
     }
 
     #[test]
@@ -159,7 +158,7 @@ mod tests {
         sync.apply(&herdr, vec![]);
         let calls = herdr.take();
         assert_eq!(calls[0]["pane_id"], "w1:p1");
-        assert_eq!(calls[0]["tokens"], json!({ "order": null, "header": null, "worktree": null }));
+        assert_eq!(calls[0]["tokens"], json!({ "order": null, "header": null, "worktree": null, "gap": null }));
     }
 
     #[test]
