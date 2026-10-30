@@ -107,16 +107,18 @@ pub struct Daemon<H: Herdr> {
     stop_file: PathBuf,
     projects: Projects,
     sync: Sync,
+    divider_width: usize,
 }
 
 impl<H: Herdr> Daemon<H> {
-    pub fn new(herdr: H, source: String, state_dir: &Path) -> Self {
+    pub fn new(herdr: H, source: String, state_dir: &Path, divider_width: usize) -> Self {
         Self {
             herdr,
             sync: Sync::new(source.clone()),
             source,
             stop_file: state_dir.join(STOP_FILE),
             projects: Projects::new(),
+            divider_width,
         }
     }
 
@@ -177,7 +179,7 @@ impl<H: Herdr> Daemon<H> {
         let mut result = self.herdr.call("session.snapshot", json!({}))?;
         let snapshot = result.get_mut("snapshot").map(Value::take).unwrap_or(Value::Null);
         let agents = model::agents(snapshot).map_err(|error| Error::Protocol(error.to_string()))?;
-        let rows = layout(&agents, |cwd| self.projects.project_for(cwd));
+        let rows = layout(&agents, self.divider_width, |cwd| self.projects.project_for(cwd));
         for error in self.sync.apply(&self.herdr, rows) {
             eprintln!("groups: {error}");
         }
@@ -191,6 +193,8 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use tempfile::TempDir;
+
+    const WIDTH: usize = 36;
 
     #[derive(Clone, Default)]
     struct FakeHerdr {
@@ -319,7 +323,7 @@ mod tests {
     fn closed_socket_ends_the_loop() {
         let dir = TempDir::new().unwrap();
         let herdr = FakeHerdr { socket_gone: true, ..FakeHerdr::default() };
-        let exit = Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(|| {});
+        let exit = Daemon::new(herdr.clone(), "plugin:test".into(), dir.path(), WIDTH).run(|| {});
         assert_eq!(exit, Exit::SocketGone);
         assert_eq!(herdr.count("session.snapshot"), 3);
     }
@@ -328,7 +332,7 @@ mod tests {
     fn unchanged_snapshot_reports_once() {
         let dir = TempDir::new().unwrap();
         let herdr = FakeHerdr::default();
-        let exit = Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(stop_after(dir.path(), 3));
+        let exit = Daemon::new(herdr.clone(), "plugin:test".into(), dir.path(), WIDTH).run(stop_after(dir.path(), 3));
         assert_eq!(exit, Exit::Stopped);
         assert_eq!(herdr.count("session.snapshot"), 3);
         assert_eq!(herdr.count("pane.report_metadata"), 2);
@@ -338,7 +342,7 @@ mod tests {
     fn stop_clears_tokens_and_view() {
         let dir = TempDir::new().unwrap();
         let herdr = FakeHerdr::default();
-        Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(stop_after(dir.path(), 1));
+        Daemon::new(herdr.clone(), "plugin:test".into(), dir.path(), WIDTH).run(stop_after(dir.path(), 1));
         assert_eq!(herdr.last_method(), "agent.view.clear");
         assert_eq!(*herdr.view_source.borrow(), None);
     }
@@ -375,7 +379,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let herdr = FakeHerdr::default();
         let exit =
-            Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(lose_view_after(&herdr, dir.path(), 1, None));
+            Daemon::new(herdr.clone(), "plugin:test".into(), dir.path(), WIDTH).run(lose_view_after(&herdr, dir.path(), 1, None));
         assert_eq!(exit, Exit::ViewLost);
         assert_eq!(herdr.count("session.snapshot"), 1);
         assert_eq!(cleared_panes(&herdr), 1);
@@ -385,7 +389,7 @@ mod tests {
     fn view_taken_by_another_source_counts_as_lost() {
         let dir = TempDir::new().unwrap();
         let herdr = FakeHerdr::default();
-        let exit = Daemon::new(herdr.clone(), "plugin:test".into(), dir.path())
+        let exit = Daemon::new(herdr.clone(), "plugin:test".into(), dir.path(), WIDTH)
             .run(lose_view_after(&herdr, dir.path(), 1, Some("plugin:other")));
         assert_eq!(exit, Exit::ViewLost);
         assert_eq!(*herdr.view_source.borrow(), Some("plugin:other".into()));
@@ -395,14 +399,14 @@ mod tests {
     fn checking_the_view_leaves_it_in_place() {
         let dir = TempDir::new().unwrap();
         let herdr = FakeHerdr::default();
-        Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(lose_view_after(&herdr, dir.path(), 2, None));
+        Daemon::new(herdr.clone(), "plugin:test".into(), dir.path(), WIDTH).run(lose_view_after(&herdr, dir.path(), 2, None));
         assert_eq!(herdr.count("session.snapshot"), 2);
     }
 
     #[test]
     fn stop_request_outlives_the_stopped_instance() {
         let dir = TempDir::new().unwrap();
-        Daemon::new(FakeHerdr::default(), "plugin:test".into(), dir.path()).run(stop_after(dir.path(), 1));
+        Daemon::new(FakeHerdr::default(), "plugin:test".into(), dir.path(), WIDTH).run(stop_after(dir.path(), 1));
         assert!(dir.path().join(STOP_FILE).exists());
     }
 
@@ -448,7 +452,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         write_stop_request(dir.path()).unwrap();
         let herdr = FakeHerdr::default();
-        Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(stop_after(dir.path(), 1));
+        Daemon::new(herdr.clone(), "plugin:test".into(), dir.path(), WIDTH).run(stop_after(dir.path(), 1));
         assert_eq!(herdr.count("session.snapshot"), 1);
     }
 
@@ -494,7 +498,7 @@ mod tests {
     fn rejected_view_exits_without_polling() {
         let dir = TempDir::new().unwrap();
         let herdr = FakeHerdr { reject_view: true, ..FakeHerdr::default() };
-        let exit = Daemon::new(herdr.clone(), "plugin:test".into(), dir.path()).run(|| {});
+        let exit = Daemon::new(herdr.clone(), "plugin:test".into(), dir.path(), WIDTH).run(|| {});
         assert_eq!(exit, Exit::ViewRejected);
         assert_eq!(herdr.count("session.snapshot"), 0);
     }

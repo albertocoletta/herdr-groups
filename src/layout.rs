@@ -6,7 +6,6 @@ use crate::project::Project;
 
 pub const SPACER: &str = "\u{200b}";
 pub const TOKENS: [&str; 4] = ["order", "header", "worktree", "divider"];
-const DIVIDER_WIDTH: usize = 36;
 
 pub type Tokens = BTreeMap<&'static str, String>;
 
@@ -26,7 +25,7 @@ struct Group<'a> {
     members: Vec<Member<'a>>,
 }
 
-pub fn layout(agents: &[Agent], mut project_of: impl FnMut(&Path) -> Project) -> Vec<Row> {
+pub fn layout(agents: &[Agent], divider_width: usize, mut project_of: impl FnMut(&Path) -> Project) -> Vec<Row> {
     let mut sorted: Vec<&Agent> = agents.iter().collect();
     sorted.sort_by_key(|agent| agent.position);
 
@@ -54,7 +53,7 @@ pub fn layout(agents: &[Agent], mut project_of: impl FnMut(&Path) -> Project) ->
                     tokens.insert("worktree", format!("wt {folder}"));
                 }
                 if member_index == last_member_index && group_index < last_group_index {
-                    tokens.insert("divider", "─".repeat(DIVIDER_WIDTH));
+                    tokens.insert("divider", "─".repeat(divider_width));
                 }
                 Row { pane_id: member.agent.pane_id.clone(), tokens }
             })
@@ -67,6 +66,8 @@ mod tests {
     use super::*;
     use crate::model::Position;
     use std::path::PathBuf;
+
+    const WIDTH: usize = 36;
 
     fn agent(pane_id: &str, cwd: &str, workspace: usize, pane: usize) -> Agent {
         Agent {
@@ -106,6 +107,7 @@ mod tests {
                 agent("api-1", "/p/api", 1, 2),
                 agent("api-3", "/p/api", 2, 4),
             ],
+            WIDTH,
             folder,
         )
     }
@@ -143,6 +145,7 @@ mod tests {
                 agent("web-1", "/p/web", 1, 1),
                 agent("api-2", "/p/api", 2, 2),
             ],
+            WIDTH,
             folder,
         );
         assert_eq!(panes_in_order(&rows), ["api-1", "api-2", "web-1"]);
@@ -156,6 +159,7 @@ mod tests {
                 agent("web-1", "/p/web", 1, 1),
                 agent("api-fix", "/p/api@fix-x", 2, 2),
             ],
+            WIDTH,
             with_worktrees,
         );
         assert_eq!(panes_in_order(&rows), ["api-1", "api-fix", "web-1"]);
@@ -164,7 +168,7 @@ mod tests {
 
     #[test]
     fn only_worktree_rows_get_a_worktree_label() {
-        let rows = layout(&[agent("api-1", "/p/api", 0, 0), agent("api-fix", "/p/api@fix-x", 1, 1)], with_worktrees);
+        let rows = layout(&[agent("api-1", "/p/api", 0, 0), agent("api-fix", "/p/api@fix-x", 1, 1)], WIDTH, with_worktrees);
         assert_eq!(token(&rows, "api-1", "worktree"), None);
         assert_eq!(token(&rows, "api-fix", "worktree"), Some("wt fix-x"));
     }
@@ -178,9 +182,10 @@ mod tests {
                 agent("web-1", "/p/web", 1, 2),
                 agent("cli-1", "/p/cli", 2, 3),
             ],
+            WIDTH,
             folder,
         );
-        let divider = "─".repeat(DIVIDER_WIDTH);
+        let divider = "─".repeat(WIDTH);
         assert_eq!(token(&rows, "api-1", "divider"), None);
         assert_eq!(token(&rows, "api-2", "divider"), Some(divider.as_str()));
         assert_eq!(token(&rows, "web-1", "divider"), Some(divider.as_str()));
@@ -188,8 +193,14 @@ mod tests {
     }
 
     #[test]
+    fn divider_is_as_wide_as_asked() {
+        let rows = layout(&[agent("api-1", "/p/api", 0, 0), agent("web-1", "/p/web", 1, 1)], 5, folder);
+        assert_eq!(token(&rows, "api-1", "divider"), Some("─────"));
+    }
+
+    #[test]
     fn every_token_is_listed_in_tokens() {
-        let rows = layout(&[agent("web-1", "/p/web", 0, 0), agent("api-fix", "/p/api@fix-x", 1, 1)], with_worktrees);
+        let rows = layout(&[agent("web-1", "/p/web", 0, 0), agent("api-fix", "/p/api@fix-x", 1, 1)], WIDTH, with_worktrees);
         for row in rows {
             assert!(row.tokens.keys().all(|name| TOKENS.contains(name)), "{:?}", row.tokens);
         }

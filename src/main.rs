@@ -1,3 +1,4 @@
+mod config;
 mod daemon;
 mod herdr;
 mod layout;
@@ -11,6 +12,7 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
+use config::Config;
 use daemon::{Daemon, Toggle};
 use herdr::Client;
 
@@ -73,7 +75,9 @@ fn run(state_dir: &Path, _lock: File) -> ExitCode {
     };
     let plugin_id = std::env::var("HERDR_PLUGIN_ID").unwrap_or_else(|_| "albertocoletta.groups".into());
 
-    let exit = Daemon::new(client, format!("plugin:{plugin_id}"), state_dir).run(|| thread::sleep(POLL_INTERVAL));
+    let config = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR").map(|dir| Config::load(Path::new(&dir))).unwrap_or_default();
+    let mut daemon = Daemon::new(client, format!("plugin:{plugin_id}"), state_dir, config.divider_width);
+    let exit = daemon.run(|| thread::sleep(POLL_INTERVAL));
     eprintln!("groups: exited ({exit:?})");
     ExitCode::SUCCESS
 }
