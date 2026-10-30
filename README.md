@@ -123,7 +123,7 @@ herdr plugin link .
 
 `herdr plugin link` skips the install step, so `bin/` needs your own build.
 
-To release, set the same version in `Cargo.toml` and `herdr-plugin.toml`, then push a `v<version>` tag. The release workflow builds the binaries the installer downloads.
+To release, run `just release <version>` on an up-to-date `main`. It sets the version, runs the tests, commits, and pushes `main` and the `v<version>` tag. The tag starts the release workflow, which builds the binaries the installer downloads.
 
 ## License
 

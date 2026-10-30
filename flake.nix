@@ -34,6 +34,7 @@
             pkgs.rustfmt
             pkgs.rust-analyzer
             pkgs.git
+            pkgs.just
           ];
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
         };
