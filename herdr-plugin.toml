@@ -1,9 +1,12 @@
 id = "albertocoletta.groups"
 name = "groups"
-version = "0.1.0"
+version = "1.0.0"
 min_herdr_version = "0.9.5"
 platforms = ["macos", "linux"]
 description = "Group the Agents panel by git checkout, with a header per project."
+
+[[build]]
+command = ["bash", "herdr/install.sh"]
 
 [[startup]]
 command = ["bin/herdr-groups", "start"]
